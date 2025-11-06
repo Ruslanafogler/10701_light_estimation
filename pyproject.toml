@@ -1,0 +1,23 @@
+[project]
+name = "10701-light-estimation"
+version = "0.1.0"
+description = "Near-field light source estimation"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "bpy>=4.5.4",
+    "mathutils>=3.3.0",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.14.3",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 89
+fix = true
+format = "ruff"
+extend-select = ["I"] # sort imports
+

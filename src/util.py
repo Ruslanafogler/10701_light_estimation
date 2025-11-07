@@ -82,7 +82,9 @@ def save_normals(normals: np.ndarray, output_path: str) -> None:
     np.save(output_path, normals)
 
 
-def save_normals_as_image(normals: np.ndarray, output_path: str) -> None:
+def save_normals_as_image(
+    normals: np.ndarray, output_path: str, mask: np.ndarray = None
+) -> None:
     """
     Save normal map as PNG image (for visualization).
     Normals are visualized as RGB where each component is mapped to [0, 255].
@@ -90,6 +92,7 @@ def save_normals_as_image(normals: np.ndarray, output_path: str) -> None:
     Args:
         normals: Normal map of shape (height, width, 3), values in [-1, 1].
         output_path: Path to save the image.
+        mask: Optional binary mask of shape (height, width). Masked regions (where mask==0) will be set to black.
     """
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
 
@@ -97,6 +100,13 @@ def save_normals_as_image(normals: np.ndarray, output_path: str) -> None:
     vis_normals = (normals + 1.0) / 2.0
     vis_normals = np.clip(vis_normals, 0, 1)
     vis_normals = (vis_normals * 255).astype(np.uint8)
+
+    if mask is not None:
+        if mask.ndim != 2 or mask.shape[:2] != vis_normals.shape[:2]:
+            raise ValueError(
+                f"Mask shape {mask.shape} does not match normals shape {vis_normals.shape[:2]}"
+            )
+        vis_normals[mask == 0] = 0
 
     img = Image.fromarray(vis_normals)
     img.save(output_path)

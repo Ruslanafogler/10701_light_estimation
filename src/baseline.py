@@ -29,8 +29,8 @@ def uncalibrated_photometric_stereo(
     img_matrix = images.reshape(h * w, n)
 
     # Remove dark pixels
-    valid_mask = (img_matrix.max(axis=1) > 0.01).astype(bool)
-    img_valid = img_matrix[valid_mask, :]
+    valid_mask_flat = (img_matrix.max(axis=1) > 0.01).astype(bool)
+    img_valid = img_matrix[valid_mask_flat, :]
 
     # SVD decomposition
     U, S, Vt = svd(img_valid, full_matrices=False)
@@ -70,25 +70,27 @@ def uncalibrated_photometric_stereo(
     # remap
     normals_full = np.zeros((h * w, 3))
     albedos_full = np.zeros(h * w)
-    normals_full[valid_mask, :] = normals_valid
-    albedos_full[valid_mask] = albedos_valid
+    normals_full[valid_mask_flat, :] = normals_valid
+    albedos_full[valid_mask_flat] = albedos_valid
 
-    # Set invalid pixels to default (0, 0, 1)
-    normals_full[~valid_mask, :] = np.array([0, 0, 1])
-    albedos_full[~valid_mask] = 0
+    # Set invalid pixels to black (0, 0, 1)
+    # this is y-up, btw, which is perp to camera ray
+    normals_full[~valid_mask_flat, :] = np.array([0, 0, 1])
+    albedos_full[~valid_mask_flat] = 0
 
     # Reshape to image format
     normals = normals_full.reshape(h, w, 3)
     albedos = albedos_full.reshape(h, w)
+    valid_mask = valid_mask_flat.reshape(h, w)
 
     # Normalize normals
     norms = np.linalg.norm(normals, axis=2, keepdims=True)
-    normals = normals / (norms + 1e-6)
+    normals = np.where(norms > 1e-6, normals / norms, normals)
 
     albedos = np.clip(albedos, 0, 1)
     light_directions = L_normalized
 
-    return normals, albedos, light_directions
+    return normals, albedos, light_directions, valid_mask
 
 
 def main():
@@ -103,13 +105,13 @@ def main():
 
     # run photometric
     num_lights = images.shape[2]
-    normals, albedos, light_dirs = uncalibrated_photometric_stereo(
+    normals, albedos, light_dirs, valid_mask = uncalibrated_photometric_stereo(
         images, num_lights=num_lights
     )
 
     print(f"\nSaving results to {output_dir}/")
     save_normals(normals, str(output_dir / "normals.npy"))
-    save_normals_as_image(normals, str(output_dir / "normals.png"))
+    save_normals_as_image(normals, str(output_dir / "normals.png"), mask=valid_mask)
     save_albedo(albedos, str(output_dir / "albedos.npy"))
     save_albedo_as_image(albedos, str(output_dir / "albedos.png"))
     save_light_directions(light_dirs, str(output_dir / "light_directions.npy"))

@@ -1,3 +1,8 @@
 .DS_Store
 .venv/
 src/__pycache__
+meshes/
+*.ini
+.projectile
+.vscode
+dataset/

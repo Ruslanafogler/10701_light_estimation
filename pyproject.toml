@@ -5,11 +5,14 @@ description = "Near-field light source estimation"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
-    "bpy>=4.5.4",
     "mathutils>=3.3.0",
     "numpy>=1.24.0",
     "scipy>=1.10.0",
     "pillow>=9.0.0",
+    "mitsuba>=3.7.1",
+    "polyscope>=2.5.0",
+    "trimesh>=4.0.0",
+    "matplotlib>=3.10.7",
 ]
 
 [dependency-groups]
@@ -21,6 +24,4 @@ dev = [
 target-version = "py311"
 line-length = 89
 fix = true
-format = "ruff"
 extend-select = ["I"] # sort imports
-

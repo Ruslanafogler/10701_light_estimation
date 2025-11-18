@@ -1,73 +1,150 @@
 import json
 import os
 from pathlib import Path
-from typing import Tuple
 
+import mitsuba as mi
 import numpy as np
 from PIL import Image
 
 
-def load_dataset(dataset_dir: str) -> Tuple[np.ndarray, dict]:
+class ImageDataset:
+    def __init__(self, data: np.ndarray, metadata: dict):
+        if data.ndim != 4 or data.shape[3] != 10:
+            raise ValueError(
+                f"Expected data shape (N, H, W, 10), got {data.shape}"
+            )
+        self.data = data
+        self.metadata = metadata
+
+    def rgb(self) -> np.ndarray:
+        return self.data[:, :, :, 0:3]
+
+    def depth(self) -> np.ndarray:
+        return self.data[:, :, :, 3]
+
+    def normals(self) -> np.ndarray:
+        normals_world = self.data[:, :, :, 4:7]
+
+        # transform the camera space
+        if "camera" in self.metadata and "R_cw" in self.metadata["camera"]:
+            R_cw = np.array(self.metadata["camera"]["R_cw"], dtype=np.float32)
+            n, h, w, _ = normals_world.shape
+            normals_flat = normals_world.reshape(-1, 3)
+            normals_cam_flat = (R_cw @ normals_flat.T).T
+            normals_cam = normals_cam_flat.reshape(n, h, w, 3)
+            return normals_cam
+
+        return normals_world
+
+
+    def albedos(self) -> np.ndarray:
+        return self.data[:, :, :, 7:10]
+
+    def light_directions(self) -> np.ndarray:
+        if "lights" not in self.metadata:
+            raise ValueError("No light metadata available")
+
+        lights = self.metadata["lights"]
+        directions = np.array(
+            [light["direction_to_object_camera"] for light in lights],
+            dtype=np.float32,
+        )
+
+        if directions.ndim == 3:
+            directions = directions.squeeze(axis=1)
+
+        return -directions
+
+    def light_power(self) -> np.ndarray:
+        if "lights" not in self.metadata:
+            raise ValueError("No light metadata available")
+
+        lights = self.metadata["lights"]
+        power = np.array([light["energy_W"] for light in lights], dtype=np.float32)
+
+        return power
+
+    def light_positions(self) -> np.ndarray:
+        if "lights" not in self.metadata:
+            raise ValueError("No light metadata available")
+        if "camera" not in self.metadata:
+            raise ValueError("No camera metadata available")
+
+        lights = self.metadata["lights"]
+        positions_world = np.array(
+            [light["position_world"] for light in lights], dtype=np.float32
+        )
+        
+        R_cw = np.array(self.metadata["camera"]["R_cw"], dtype=np.float32).squeeze(0)
+        t_cw = np.array(self.metadata["camera"]["t_cw"], dtype=np.float32).squeeze(0)
+
+        positions_camera = (R_cw @ positions_world.T).T + t_cw        
+
+        return positions_camera
+
+    @property
+    def shape(self):
+        return self.data.shape
+
+    def __len__(self):
+        return self.data.shape[0]
+
+
+def load_dataset(dataset_dir: str) -> ImageDataset:
     """
-    Load TIFF images from the dataset directory.
+    Load EXR images from the dataset directory with all AOV channels.
+
+    The EXR files are expected to contain the following channels:
+    - my_image.RGB (3 channels): rendered image
+    - dd.Y (1 channel): depth
+    - nn.RGB (3 channels): shading normals
+    - al.RGB (3 channels): albedo
 
     Args:
-        dataset_dir: Path to the dataset directory containing TIFF images.
+        dataset_dir: Path to the dataset directory containing EXR images.
 
     Returns:
-        images: Shape (height, width, num_images) containing grayscale image data.
-        metadata: Dictionary containing camera and light information if available.
+        ImageDataset containing all channels and metadata
     """
     dataset_path = Path(dataset_dir)
 
-    # Get all TIFF files sorted by name
-    tiff_files = sorted(dataset_path.glob("img_*.tiff"))
+    exr_files = sorted(dataset_path.glob("img_*.exr"))
 
-    if not tiff_files:
-        raise FileNotFoundError(f"No TIFF images found in {dataset_dir}")
+    if not exr_files:
+        raise FileNotFoundError(f"No EXR images found in {dataset_dir}")
 
-    # Load images
-    images_list = []
-    for tiff_file in tiff_files:
-        img = Image.open(tiff_file)
-        img_array = np.array(img, dtype=np.float32)
+    if not mi.variant():
+        available_backends = mi.variants()
+        backends = ["cuda_ad_rgb", "llvm_ad_rgb", "scalar_rgb"]
+        for backend in backends:
+            if backend in available_backends:
+                mi.set_variant(backend)
+                break
 
-        # Convert to grayscale if multi-channel
-        if len(img_array.shape) == 3:
-            if img_array.shape[2] == 4:  # RGBA
-                # Convert RGBA to grayscale using luminance formula
-                img_array = (
-                    0.299 * img_array[:, :, 0]
-                    + 0.587 * img_array[:, :, 1]
-                    + 0.114 * img_array[:, :, 2]
-                )
-            elif img_array.shape[2] == 3:  # RGB
-                # Convert RGB to grayscale using luminance formula
-                img_array = (
-                    0.299 * img_array[:, :, 0]
-                    + 0.587 * img_array[:, :, 1]
-                    + 0.114 * img_array[:, :, 2]
-                )
-            # else: assume already grayscale
+    first_bitmap = mi.Bitmap(str(exr_files[0]))
+    h, w = first_bitmap.height(), first_bitmap.width()
+    num_images = len(exr_files)
+    all_data = np.zeros((num_images, h, w, 10), dtype=np.float32)
 
-        # Normalize to [0, 1] range
-        max_val = img_array.max()
-        if max_val > 1.0:
-            img_array = img_array / max_val
+    for i, exr_file in enumerate(exr_files):
+        bitmap = mi.Bitmap(str(exr_file))
 
-        images_list.append(img_array)
+        img_array = np.array(bitmap, dtype=np.float32)
 
-    # Stack into (H, W, N) format
-    images = np.stack(images_list, axis=-1)
+        if img_array.shape[2] != 10:
+            raise ValueError(
+                f"Expected 10 channels in {exr_file}, got {img_array.shape[2]}"
+            )
 
-    # Try to load metadata if available
+        all_data[i] = img_array
+
     metadata = {}
     meta_file = dataset_path / "lights_meta.json"
     if meta_file.exists():
         with open(meta_file, "r") as f:
             metadata = json.load(f)
 
-    return images, metadata
+    return ImageDataset(all_data, metadata)
 
 
 def save_normals(normals: np.ndarray, output_path: str) -> None:
@@ -93,20 +170,24 @@ def save_normals_as_image(
         normals: Normal map of shape (height, width, 3), values in [-1, 1].
         output_path: Path to save the image.
         mask: Optional binary mask of shape (height, width). Masked regions (where mask==0) will be set to black.
+              If None, creates a mask based on normal magnitude < 0.5.
     """
     os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+
+    if mask is None:
+        norms = np.linalg.norm(normals, axis=2)
+        mask = (norms >= 0.5).astype(bool)
 
     # Convert [-1, 1] to [0, 1] then to [0, 255]
     vis_normals = (normals + 1.0) / 2.0
     vis_normals = np.clip(vis_normals, 0, 1)
     vis_normals = (vis_normals * 255).astype(np.uint8)
 
-    if mask is not None:
-        if mask.ndim != 2 or mask.shape[:2] != vis_normals.shape[:2]:
-            raise ValueError(
-                f"Mask shape {mask.shape} does not match normals shape {vis_normals.shape[:2]}"
-            )
-        vis_normals[mask == 0] = 0
+    if mask.ndim != 2 or mask.shape[:2] != vis_normals.shape[:2]:
+        raise ValueError(
+            f"Mask shape {mask.shape} does not match normals shape {vis_normals.shape[:2]}"
+        )
+    vis_normals[mask == 0] = 0
 
     img = Image.fromarray(vis_normals)
     img.save(output_path)

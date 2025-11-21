@@ -5,7 +5,7 @@ from pathlib import Path
 import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
-from load_obj import load_obj
+# from load_obj import load_obj
 from Poisson_Depth_Recovery.main import PoissonOperator, plot_est_result
 from photometric import visualize_normals
 

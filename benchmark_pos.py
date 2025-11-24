@@ -6,7 +6,12 @@ import numpy as np
 import matplotlib.pyplot as plt
 from PIL import Image
 # from load_obj import load_obj
-from Poisson_Depth_Recovery.main import PoissonOperator, plot_est_result
+#from Poisson_Depth_Recovery.main import PoissonOperator
+
+sys.path.append("Poisson-Depth-Recovery") #can't rename this folder, but python cannot do hyphens
+poisson_module = __import__("main")
+PoissonOperator = poisson_module.PoissonOperator
+
 from photometric import visualize_normals
 
 from util import load_dataset
@@ -32,7 +37,7 @@ def compute_camera_matrix(fov=50, image_res=512, origin_vec=[0, 0, 3], target_ve
   up = np.array(up_vec, dtype=float)
 
   fov_rad = np.radians(fov)
-  f = image_res / 2*(np.tan(fov_rad/2))
+  f = image_res / (2 * np.tan(fov_rad/2))
 
   K = np.array([
     [f, 0, image_res/2],
@@ -103,6 +108,9 @@ if __name__ == "__main__":
 
   image_res = 512
 
+  print("depth dim", depth.shape)
+  print("normals dim", n.shape)
+
   x, y = np.meshgrid(np.arange(image_res), np.arange(image_res))
   u = x - px
   v = np.flipud(y) - py
@@ -113,17 +121,29 @@ if __name__ == "__main__":
   # d = np.log(d)
 
   #rembmer this is from an output image so lets do this porperly
-  n_mask = (depth > 0.0)
-  batch = PoissonOperator(np.dstack([p, q]), n_mask.astype(np.int8), None, 0.1)
+
+
+
+
+  n_mask = ~(np.all(np.abs(n) == np.array([0, 0, 1]), axis=-1))
+  # print("normals (gt)", n)
+  # Before passing to PoissonOperator
+  d_mask = (depth > 0) & n_mask  # Valid depth pixels
+  depth_log = depth.copy()
+  depth_log[depth_log <= 0] = 1  # Avoid log(0)
+  depth_log = np.log(depth_log)
+  depth_log[~d_mask] = 0  # Zero out invalid regions
+  
+  
+  batch = PoissonOperator(np.dstack([p, q]), n_mask.astype(np.int8), depth_log, 0.1)
   d_est = np.exp(batch.run())
 
+  d_est[~n_mask] = 0
+  depth[~n_mask] = 0
 
-  # plot_est_result(d_est)
-
-
-  fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+  fig, axes = plt.subplots(1, 4, figsize=(15, 5))
   fig.suptitle('Normal Maps Comparison', fontsize=16)
-  
+
   # Ground truth
   im = axes[0].imshow(d_est, cmap='viridis')
   cbar = plt.colorbar(im)
@@ -132,12 +152,16 @@ if __name__ == "__main__":
   
   im2 = axes[1].imshow(depth, cmap='viridis')
   cbar = plt.colorbar(im2)
-  axes[1].set_title('Ground Truth')
+  axes[1].set_title('Ground Truth Depth')
   axes[1].axis('off')
   
   im2 = axes[2].imshow((n+1.0)/2.0)
-  axes[2].set_title('Ground Truth')
+  axes[2].set_title('Ground Truth Normals')
   axes[2].axis('off')
+
+  im2 = axes[3].imshow(np.abs(d_est - depth))
+  axes[3].set_title('Error')
+  axes[3].axis('off')
   plt.show()
 
 

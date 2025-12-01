@@ -6,6 +6,7 @@ import mitsuba as mi
 import numpy as np
 from PIL import Image
 
+import math
 
 class ImageDataset:
     def __init__(self, data: np.ndarray, metadata: dict):
@@ -55,6 +56,16 @@ class ImageDataset:
 
         return -directions
 
+    def light_intensities(self) -> np.ndarray:
+        if "lights" not in self.metadata:
+            raise ValueError("No light metadata available")
+
+        lights = self.metadata["lights"]
+        intensities = np.array([light["energy_W"] for light in lights], dtype=np.float32)
+        intensities = intensities / (4 * math.pi)
+
+        return intensities
+
     def light_power(self) -> np.ndarray:
         if "lights" not in self.metadata:
             raise ValueError("No light metadata available")
@@ -81,6 +92,52 @@ class ImageDataset:
         positions_camera = (R_cw @ positions_world.T).T + t_cw        
 
         return positions_camera
+    
+    # def xyz(self) -> np.ndarray:
+    #     """
+    #     Return per-pixel 3D world coordinates X_p with shape (H, W, 3).
+    #     Uses depth + camera intrinsics + camera extrinsics.
+    #     """
+    #     if "camera" not in self.metadata:
+    #         raise ValueError("Camera metadata required for XYZ reconstruction")
+
+    #     cam = self.metadata["camera"]
+
+    #     if not all(k in cam for k in ("fx", "fy", "cx", "cy", "R_cw", "t_cw")):
+    #         raise ValueError(
+    #             "Camera metadata missing intrinsics or extrinsics "
+    #             "(requires fx, fy, cx, cy, R_cw, t_cw)"
+    #         )
+
+    #     R_cw = np.array(cam["R_cw"], dtype=np.float32)
+    #     t_cw = np.array(cam["t_cw"], dtype=np.float32)
+    #     intrinsics = {
+    #         "fx": cam["fx"],
+    #         "fy": cam["fy"],
+    #         "cx": cam["cx"],
+    #         "cy": cam["cy"],
+    #     }
+
+    #     # only 1 depth map exists because depth does not vary per-light
+    #     depth = self.depth()[0]          # shape (H, W)
+
+    #     X_world = compute_xyz_from_depth(depth, intrinsics, R_cw, t_cw)
+    #     return X_world
+    def xyz(self):
+        depth = self.depth()[0]  # (H,W) Z_cam
+        H, W = depth.shape
+        cam = self.metadata["camera"]
+
+        fx, fy = cam["fx"], cam["fy"]
+        cx, cy = cam["cx"], cam["cy"]
+
+        u, v = np.meshgrid(np.arange(W), np.arange(H))
+        Z = depth
+        X = (u - cx) * Z / fx
+        Y = (v - cy) * Z / fy
+
+        X_cam = np.stack([X, Y, Z], axis=-1)
+        return X_cam
 
     @property
     def shape(self):
@@ -88,6 +145,43 @@ class ImageDataset:
 
     def __len__(self):
         return self.data.shape[0]
+
+def compute_xyz_from_depth(depth, intrinsics, R_cw, t_cw):
+    """
+    depth:      (H, W) depth map (in camera coordinates)
+    intrinsics: dict with keys 'fx', 'fy', 'cx', 'cy'
+    R_cw:       (3, 3) world->camera rotation
+    t_cw:       (3,)   world->camera translation
+    returns:    (H, W, 3) world-space XYZ points
+    """
+    H, W = depth.shape
+
+    fx = intrinsics["fx"]
+    fy = intrinsics["fy"]
+    cx = intrinsics["cx"]
+    cy = intrinsics["cy"]
+
+    # pixel grid
+    u, v = np.meshgrid(np.arange(W), np.arange(H))
+
+    # camera-space coordinates
+    Z = depth
+    X = (u - cx) * Z / fx
+    Y = (v - cy) * Z / fy
+
+    X_cam = np.stack([X, Y, Z], axis=-1).reshape(-1, 3)  # (N,3)
+
+    # convert to world space
+    R_wc = (R_cw.T).reshape(3,3)           # (3,3)
+    t_cw = t_cw.reshape(3,)      # ensure (3,)
+
+    print(R_wc.shape, t_cw.shape, X_cam.shape)
+
+    # X_world = R_wc * (X_cam - t_cw)
+    X_world = (R_wc @ (X_cam - t_cw).T).T  # (N,3)
+
+    return X_world.reshape(H, W, 3)
+
 
 
 def load_dataset(dataset_dir: str) -> ImageDataset:

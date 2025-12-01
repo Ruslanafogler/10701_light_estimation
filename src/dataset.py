@@ -16,6 +16,26 @@ from util import (
     save_normals_as_image,
 )
 
+def compute_ray_directions(fx, fy, cx, cy, W, H):
+    u, v = np.meshgrid(np.arange(W), np.arange(H))
+    dx = (u - cx) / fx
+    dy = (v - cy) / fy
+    dz = np.ones_like(dx)
+
+    dirs = np.stack([dx, dy, dz], axis=-1)     # (H, W, 3)
+    norms = np.linalg.norm(dirs, axis=-1, keepdims=True)
+    dirs /= norms
+
+    return dirs.astype(np.float32)
+
+def depth_ray_to_Z(depth_ray, ray_dirs):
+    """
+    depth_ray: (H,W) Mitsuba AOV dd.y = ray distance
+    ray_dirs:  (H,W,3) camera-space ray directions
+    Returns Z = depth_ray * d_z
+    """
+    return depth_ray * ray_dirs[..., 2]
+
 
 def fibonacci_hemisphere(n, radius=1.0):
     """Generate n evenly spaced points on the UPPER hemisphere (z > 0)."""
@@ -199,38 +219,73 @@ def generate_dataset(
         target=[0.0, 0.0, 0.0],
         up=[0.0, 1.0, 0.0],
     )
+
     camera_pos = np.array([0.0, 0.0, 3.0])
 
     # Extract rotation matrix from transformation
     m = camera_to_world.matrix
     R_wc = np.array([m[i, :3] for i in range(3)])
     R_cw = R_wc.T
+    t_cw = (-(R_cw @ camera_pos))
+    t_wc = t_cw.T
 
     meta = {"camera": {}, "lights": []}
+    fov = 50.0
+
+    W, H = image_res, image_res
+
+    fx = W / (2 * math.tan(math.radians(fov) / 2))
+    fy = fx
+    cx = W / 2
+    cy = H / 2
+
+    # ★ NEW: compute ray directions once
+    ray_dirs = compute_ray_directions(fx, fy, cx, cy, W, H)
+
+    meta["camera"] = {
+        "location_world": camera_pos.tolist(),
+        "R_cw": R_cw.tolist(),
+        "t_cw": (-(R_cw @ camera_pos)).tolist(),
+        "fx": fx, "fy": fy, "cx": cx, "cy": cy,
+    }
+
     positions = fibonacci_hemisphere(num_lights, radius=light_radius)
 
     for i, pos in enumerate(positions):
         pos_array = np.array(pos)
 
-        # Update light position in scene
         scene_dict["light"] = {
             "type": "point",
             "position": pos,
-            "intensity": {
-                "type": "uniform",
-                "value": light_energy / (4 * math.pi),
-            },
+            "intensity": {"type": "uniform", "value": light_energy / (4 * math.pi)},
         }
 
-        # Load and render scene
         scene = mi.load_dict(scene_dict)
         img = mi.render(scene, spp=samples)
 
-        # Save rendered image
-        output_path = os.path.join(output_dir, f"img_{i:03d}.exr")
-        mi.Bitmap(img).write(output_path)
+        # Mitsuba AOV layout:
+        depth_ray = np.array(img[..., 0], dtype=np.float32)
 
-        # Calculate light direction
+        valid_mask = np.isfinite(depth_ray) & (depth_ray > 0)
+
+        depth_Z = depth_ray_to_Z(depth_ray, ray_dirs)
+
+        # For storage
+        depth_Z_store = np.zeros_like(depth_Z, dtype=np.float32)
+        depth_Z_store[valid_mask] = depth_Z[valid_mask]
+
+        # Replace Mitsuba AOV depth with our Z-map
+        img_np = np.array(img, dtype=np.float32)
+        img_np[..., 0] = depth_Z_store   # safe, no NaN/inf
+
+
+        output_path = os.path.join(output_dir, f"img_{i:03d}.exr")
+        mi.Bitmap(img_np).write(output_path)
+
+        np.save(os.path.join(output_dir, f"valid_mask_{i:03d}.npy"), valid_mask.astype(np.uint8))
+
+
+        # compute light direction in camera coords
         l_dir_world = -pos_array / np.linalg.norm(pos_array)
         l_dir_cam = (R_cw @ l_dir_world).tolist()
 
@@ -245,12 +300,6 @@ def generate_dataset(
         )
 
         print(f"Rendering image {i + 1}/{num_lights} ...")
-
-    meta["camera"] = {
-        "location_world": camera_pos.tolist(),
-        "R_cw": R_cw.tolist(),
-        "t_cw": (-(R_cw @ camera_pos)).tolist(),
-    }
 
     with open(os.path.join(output_dir, "lights_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)

@@ -145,7 +145,6 @@ def main():
     dataset = load_dataset(str(dataset_dir))
 
     rgb_images = dataset.rgb()
-    light_dirs_gt = dataset.light_directions()
 
     # Run calibrated photometric stereo
     print("\nRunning calibrated photometric stereo...")

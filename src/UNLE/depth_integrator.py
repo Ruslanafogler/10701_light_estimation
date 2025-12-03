@@ -10,30 +10,11 @@ from Poisson_Depth_Recovery.main import PoissonOperator
 
 
 class DepthIntegrator:
-    """Wrapper around PoissonOperator for depth integration from normals."""
-    
     def __init__(self, intrinsics, is_perspective=True):
-        """
-        Args:
-            intrinsics: dict with 'fx', 'fy', 'cx', 'cy'
-            is_perspective: bool, True for perspective camera, False for orthographic
-        """
         self.intrinsics = intrinsics
         self.is_perspective = is_perspective
 
     def depth_from_normals(self, B, valid_mask, depth_info=None, depth_weight=0.1):
-        """
-        Reconstruct depth from scaled normals using Poisson integration.
-        
-        Args:
-            B: (H, W, 3) scaled normals (B = albedo * N)
-            valid_mask: (H, W) boolean mask of valid pixels
-            depth_info: optional (H, W) depth prior
-            depth_weight: weight for depth prior
-            
-        Returns:
-            z: (H, W) depth map
-        """
         H, W = B.shape[:2]
         
         # Convert to unit normals
@@ -89,20 +70,17 @@ class DepthIntegrator:
         if np.any(final_mask):
             z_mean = np.mean(z[final_mask])
             z = z - z_mean
-        
+        # --- Ensure returned depth matches full image resolution (H_full, W_full) ---
+        # B and valid_mask are always full-res, so use their shape
+        H_full, W_full = valid_mask.shape
+
+        if z.shape[0] != H_full or z.shape[1] != W_full:
+            import cv2
+            z = cv2.resize(z.astype(np.float32), (W_full, H_full),
+                        interpolation=cv2.INTER_CUBIC)
         return z
 
     def center_depth(self, z, mask):
-        """
-        Center depth map by subtracting mean depth of valid pixels.
-        
-        Args:
-            z: (H, W) depth map
-            mask: (H, W) valid pixel mask
-            
-        Returns:
-            z_centered: centered depth map
-        """
         if np.any(mask):
             z_mean = np.mean(z[mask])
             z_centered = z - z_mean

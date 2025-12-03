@@ -224,8 +224,8 @@ def generate_dataset(
 
     # Extract rotation matrix from transformation
     m = camera_to_world.matrix
-    R_wc = np.array([m[i, :3] for i in range(3)])
-    R_cw = R_wc.T
+    R_wc = np.array([m[i, :3] for i in range(3)]) #cam -> world
+    R_cw = R_wc.T #world -> cam
     t_cw = (-(R_cw @ camera_pos))
     t_wc = t_cw.T
 

@@ -6,20 +6,7 @@ import numpy as np
 
 
 class GeometryUtils:
-    """Static utility methods for geometry operations."""
-    
-    @staticmethod
     def make_X_from_depth(z, intrinsics):
-        """
-        Convert depth map to 3D camera-space coordinates.
-        
-        Args:
-            z: (H, W) depth map
-            intrinsics: dict with keys 'fx', 'fy', 'cx', 'cy'
-            
-        Returns:
-            X: (H, W, 3) camera-space coordinates
-        """
         fx, fy = intrinsics["fx"], intrinsics["fy"]
         cx, cy = intrinsics["cx"], intrinsics["cy"]
 
@@ -32,35 +19,21 @@ class GeometryUtils:
         X[..., 1] = (v - cy) * z / fy
         return X
 
-    @staticmethod
-    def normalize_normals(B):
-        """
-        Convert scaled normals B to unit normals and albedo.
-        
-        Args:
-            B: (H, W, 3) scaled normals (B = albedo * N)
-            
-        Returns:
-            N: (H, W, 3) unit normals
-            A: (H, W) albedo (magnitude of B)
-        """
+    def extract_normal_and_albedo(B):
         B = np.nan_to_num(B, nan=0.0, posinf=0.0, neginf=0.0)
         mag = np.linalg.norm(B, axis=-1, keepdims=True) + 1e-8
         N = B / mag
         A = mag[..., 0]  # albedo = magnitude
         return N, A
 
-    @staticmethod
+
     def compute_surface_gradients_from_normals(N, intrinsics, is_perspective=True):
         """
         Compute surface gradients (p, q) from normals.
         
-        Args:
             N: (H, W, 3) unit normals
             intrinsics: dict with camera intrinsics
             is_perspective: bool, True for perspective camera
-            
-        Returns:
             p, q: (H, W) surface gradients
             mask: (H, W) valid pixel mask
         """

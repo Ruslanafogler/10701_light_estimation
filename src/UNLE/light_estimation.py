@@ -8,90 +8,113 @@ from numpy.linalg import norm, solve
 
 class LightEstimator:
     """
-    Estimate light positions and intensities for the near-light Lambertian model:
-
         I_pk ≈ e_k * B_p^T (L_k - X_p) / ||L_k - X_p||^q
     """
 
     def __init__(self, q=2):
-        """
-        Args:
-            q: inverse distance exponent (2 or 3, usually 2 for near-light)
-        """
         self.q = q
 
     def gradient_descent_refine(
-            self, I_k, X, B, mask, Lk_init, ek_init,
-            num_steps=1000, lr=0.001):
+        self, I_k, X, B, mask, Lk_init, ek_init,
+        num_steps=200, lr=0.01, tol=1e-4):
         """
-        Gradient descent refinement for light position, based on Eq. (9) in UNLPS.
+        Gradient descent refinement for light position L_k, based on Eq. (9)
+        in Papadhimitri & Favaro (UNLPS), keeping e_k fixed during GD and
+        re-estimating it once at the end.
+
+        Args:
+            I_k:   (H, W) grayscale image for light k
+            X:     (H, W, 3) 3D points in camera coordinates
+            B:     (H, W, 3) pseudonormals (albedo * normal)
+            mask:  (H, W) boolean mask of valid pixels
+            Lk_init: (3,) initial light position (camera coords)
+            ek_init: scalar initial intensity
+            num_steps: gradient descent iterations
+            lr: learning rate
+            tol: early-stop threshold on grad norm
+
+        Returns:
+            Lk: (3,) refined light position
+            ek: scalar refined intensity
         """
 
+        # Work in double precision for stability
         Lk = Lk_init.astype(np.float64).copy()
         ek = float(ek_init)
 
         mask_flat = mask.ravel()
-        Xf = X.reshape(-1, 3)[mask_flat]
-        Bf = B.reshape(-1, 3)[mask_flat]
+        Xf = X.reshape(-1, 3)[mask_flat]   # (N, 3)
+        Bf = B.reshape(-1, 3)[mask_flat]   # (N, 3)
+        If = I_k.ravel()[mask_flat].astype(np.float64)  # (N,)
 
-        # Normalize B so it behaves like normals
-        Bn = Bf / (np.linalg.norm(Bf, axis=1, keepdims=True) + 1e-8)
-
-        If = I_k.ravel()[mask_flat]
         N = len(Xf)
         if N == 0:
             return Lk_init, ek_init
 
         for step in range(num_steps):
             # v_p = L - X_p
-            v = Lk[None, :] - Xf                     # (N, 3)
-            r = np.linalg.norm(v, axis=1, keepdims=True)
+            v = Lk[None, :] - Xf                 # (N, 3)
+            r = np.linalg.norm(v, axis=1, keepdims=True)  # (N, 1)
             r = np.maximum(r, 1e-6)
 
+            # B_p^T v_p
+            B_dot_v = np.sum(Bf * v, axis=1, keepdims=True)  # (N, 1)
+
             # φ_p = B_p^T v_p / ||v_p||^q
-            B_dot_v = np.sum(Bn * v, axis=1, keepdims=True)    # (N,1)
-            phi     = B_dot_v / (r ** self.q)                  # (N,1)
+            phi = B_dot_v / (r ** self.q)                    # (N, 1)
 
             # residual: I_p - e_k φ_p
-            residual = If[:, None] - ek * phi                  # (N,1)
+            residual = If[:, None] - ek * phi                # (N, 1)
 
-            # term in ∂F/∂L (vectorized version of Eq. 9)
-            term = Bn * (r ** 2) - self.q * v * B_dot_v        # (N,3)
+            # term1 = B_p / ||v_p||^q
+            term1 = Bf / (r ** self.q)                       # (N, 3)
 
-            # gradient w.r.t L (no division by N!)
+            # term2 = q * (B_p^T v_p) v_p / ||v_p||^{q+2}
+            term2 = (self.q * B_dot_v * v) / (r ** (self.q + 2))
+
+            # ∂F/∂L_k
             grad = -2.0 * ek * np.sum(
-                residual * term / (r ** (self.q + 2)),
+                residual * (term1 - term2),
                 axis=0
-            )                                                  # (3,)
-
-            # OPTIONAL: scale step to fixed max length (stabilizer)
+            )  # (3,)
 
             gnorm = np.linalg.norm(grad)
-            if gnorm > 1e-9:
-                step_vec = lr * grad / gnorm    # normalize step
-            else:
-                step_vec = 0
+
+            # Early stopping if gradient is tiny
+            if gnorm < tol:
+                # print(f"[refine] early stop at step {step}, |grad|={gnorm:.2e}")
+                break
+
+            # Gradient descent update
+            step_vec = lr * grad
+
+            # Optional: clamp max step to avoid jumps
+            max_step = 0.05
+            step_norm = np.linalg.norm(step_vec)
+            if step_norm > max_step:
+                step_vec *= (max_step / step_norm)
 
             Lk_new = Lk - step_vec
 
-            # sanity clamp (just to avoid crazy explosions)
+            # Simple sanity clamp on radius
             if np.isfinite(Lk_new).all() and np.linalg.norm(Lk_new) < 20.0:
                 Lk = Lk_new
 
-            # Re-estimate ek in closed form
-            v_new   = Lk[None, :] - Xf
-            r_new   = np.linalg.norm(v_new, axis=1, keepdims=True)
-            r_new   = np.maximum(r_new, 1e-6)
-            phi_new = np.sum(Bn * v_new, axis=1, keepdims=True) / (r_new ** self.q)
+            # (Optional) monitor
+            if step % 50 == 0:
+                F = np.sum(residual**2)
+                print(f"[refine] step {step}, F={F:.4e}, |grad|={gnorm:.2e}")
 
-            denom = np.sum(phi_new ** 2) + 1e-8
-            ek    = float(np.sum(If[:, None] * phi_new) / denom)
-            ek    = np.clip(ek, 0.0, 100.0)
+        # After optimizing L_k, recompute e_k in closed form (LS)
+        v_final = Lk[None, :] - Xf
+        r_final = np.linalg.norm(v_final, axis=1, keepdims=True)
+        r_final = np.maximum(r_final, 1e-6)
+        B_dot_v_final = np.sum(Bf * v_final, axis=1, keepdims=True)
+        phi_final = B_dot_v_final / (r_final ** self.q)
 
-            # Early stopping, but with a *gradient norm before scaling*
-            if step % 20 == 0 and gnorm < 1e-3:
-                # print(f"Early stopping at step {step}, grad norm={gnorm:.2e}")
-                break
+        denom = np.sum(phi_final ** 2) + 1e-8
+        ek = float(np.sum(If[:, None] * phi_final) / denom)
+        ek = np.clip(ek, 0.0, 100.0)
 
         return Lk.astype(np.float32), ek
 
@@ -101,8 +124,6 @@ class LightEstimator:
         Solve for scaled normals B_p at each pixel:
 
             I_pk ≈ e_k * B_p^T (L_k - X_p) / ||L_k - X_p||^q
-
-        This is linear in B_p for fixed lights (per pixel least squares).
 
         Args:
             I: (K, H, W) images
@@ -162,62 +183,53 @@ class LightEstimator:
 
     def coarse_search(self, I_k, X, B, mask, bounds, step):
         """
-        Args:
-            I_k : (H, W) image under light k
-            X   : (H, W, 3) 3D points
-            B   : (H, W, 3) scaled normals B_p
-            mask: (H, W) boolean valid pixel mask
-            bounds : ((xmin,xmax),(ymin,ymax),(zmin,zmax))
-            step : grid step (e.g., 0.1 in paper)
-
-        Returns:
-            best_L : (3,) best light position
-            best_e : scalar intensity
+        Coarse search for a single light given current geometry X, pseudonormals B.
         """
 
-        (xmin, xmax), (ymin, ymax), (zmin, zmax) = bounds
+        # valid pixels
+        mask_flat = mask.ravel()
+        Xf = X.reshape(-1, 3)[mask_flat]
+        Bf = B.reshape(-1, 3)[mask_flat]
+        If = I_k.ravel()[mask_flat].astype(np.float64)
 
-        # Create 1D grids for search (paper used 10 cm steps)
+        N = len(Xf)
+        if N == 0:
+            # degenerate
+            return np.zeros(3, dtype=np.float32), 1.0
+
+        # center the search around object center, not origin
+        center = Xf.mean(axis=0)  # (3,)
+
+        # local search cube around center (in camera coords)
+        (xmin, xmax), (ymin, ymax), (zmin, zmax) = bounds
         xs = np.arange(xmin, xmax + 1e-6, step)
         ys = np.arange(ymin, ymax + 1e-6, step)
         zs = np.arange(zmin, zmax + 1e-6, step)
-
-        # Extract valid pixels (flattened)
-        mask_flat = mask.ravel()
-        Xf = X.reshape(-1, 3)[mask_flat]    # (N, 3)
-        Bf = B.reshape(-1, 3)[mask_flat]    # (N, 3)
-        If = I_k.ravel()[mask_flat]         # (N,)
 
         best_F = np.inf
         best_L = None
         best_e = None
 
-        # Scan entire volume (paper: 1 m cube, 10 cm resolution)
         for z in zs:
             for y in ys:
                 for x in xs:
-                    Lk = np.array([x, y, z], dtype=np.float32)
+                    Lk = center + np.array([x, y, z], dtype=np.float64)
 
-                    # Eq(7) terms: v = L - Xp
-                    v = Lk[None, :] - Xf         # (N, 3)
+                    v = Lk[None, :] - Xf              # (N,3)
                     r = np.linalg.norm(v, axis=1) + 1e-8
                     rpow = r ** self.q
 
-                    # φ_p = B_p^T (L - X_p) / ||L - X_p||^q
-                    phi = np.sum(Bf * v, axis=1) / rpow   # (N,)
+                    phi = np.sum(Bf * v, axis=1) / rpow  # (N,)
 
-                    # Eq(8) closed form for light intensity e
                     denom = np.sum(phi * phi) + 1e-8
                     e_k = np.sum(If * phi) / denom
 
-                    # Residual energy F(Lk)
                     residual = If - e_k * phi
                     F = np.sum(residual * residual)
 
-                    # Keep best
                     if F < best_F:
                         best_F = F
-                        best_L = Lk
+                        best_L = Lk.copy()
                         best_e = e_k
 
-        return best_L, best_e
+        return best_L.astype(np.float32), float(best_e)

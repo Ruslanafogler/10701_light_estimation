@@ -214,7 +214,7 @@ def load_dataset(dataset_dir: str) -> ImageDataset:
             if backend in available_backends:
                 mi.set_variant(backend)
                 break
-
+    print(f"Loading dataset from {dataset_dir}...")
     first_bitmap = mi.Bitmap(str(exr_files[0]))
     h, w = first_bitmap.height(), first_bitmap.width()
     num_images = len(exr_files)

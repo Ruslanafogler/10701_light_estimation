@@ -181,6 +181,8 @@ class UNLPSEngine:
         exponent_q=2,
         mean_depth_init=1.0,
         ml_light_estimator=None,
+        bounds=None,
+        step=0.5,
     ):
         """
         Args:
@@ -218,8 +220,8 @@ class UNLPSEngine:
         self.e = None  # intensities
 
         # coarse-search volume (for non-ML mode)
-        self.bounds = ((-4.0, 4.0), (-4.0, 4.0), (-4.0, 4.0))
-        self.step = 0.5
+        self.bounds = bounds
+        self.step = step
 
         self.ml_light_est = ml_light_estimator
 
@@ -474,11 +476,11 @@ def main():
     parser = argparse.ArgumentParser(description="Train LightNet with physics-guided loss.")
     parser.add_argument("--model", type=str, default="sphere",
                         help="Dataset subdirectory name (e.g. 'sphere', 'bunny').")
-    parser.add_argument("--epochs_phase1", type=int, default=20,
+    parser.add_argument("--epochs_phase1", type=int, default=80,
                         help="Supervised-only epochs.")
     parser.add_argument("--epochs_phase2", type=int, default=40,
                         help="Supervised + physics epochs.")
-    parser.add_argument("--batch_size", type=int, default=2,
+    parser.add_argument("--batch_size", type=int, default=8,
                         help="Batch size for supervised training.")
     parser.add_argument("--q", type=int, default=2, choices=[2, 3],
                         help="Falloff exponent in near-light model.")
@@ -590,7 +592,7 @@ def main():
     print(f"Using device: {device}")
 
     model = LightNet(in_channels=5).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr = 5e-4)
     loss_fn_mse = nn.MSELoss()
 
     # Physics geometry as torch tensors (fixed during training)

@@ -80,7 +80,7 @@ def main():
     # -------------------------------------------------------------------------
     script_path = Path(__file__).resolve()
     project_dir = script_path.parent.parent
-    dataset_dir = project_dir / "dataset" / args.model
+    dataset_dir = project_dir / "dataset" / "test" /args.model
     results_base = project_dir / "results" / args.model / "unle"
 
     print(f"Loading dataset at: {dataset_dir}")
@@ -102,23 +102,46 @@ def main():
     
     z_unc = np.load(results_base / "depth_unc.npy")
 
+    RES = 128
+    K, Hf, Wf = images_gray_full.shape
+    images_gray = np.zeros((K, RES, RES), np.float32)
+    for k in range(K):
+        images_gray[k] = cv2.resize(
+            images_gray_full[k].astype(np.float32),
+            (RES, RES),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    # Resize UNLPS outputs to 128x128 if needed
+    if N_unc.shape[0] != RES or N_unc.shape[1] != RES:
+        normals_res = np.zeros((RES, RES, 3), np.float32)
+        for c in range(3):
+            normals_res[..., c] = cv2.resize(
+                N_unc[..., c], (RES, RES), interpolation=cv2.INTER_CUBIC
+            )
+        N_unc = normals_res
+
+    if A_unc.shape != (RES, RES):
+        A_unc = cv2.resize(
+            A_unc.astype(np.float32),
+            (RES, RES),
+            interpolation=cv2.INTER_AREA,
+        )
+
+    if z_unc.shape != (RES, RES):
+        z_unc = cv2.resize(
+            z_unc.astype(np.float32),
+            (RES, RES),
+            interpolation=cv2.INTER_CUBIC,
+        )
+
+    
     H_u, W_u = A_unc.shape
     print(f"UNLPS resolution: {(H_u, W_u)}")
 
     # Define mask at UNLPS resolution
     mask = (A_unc > 0)
 
-    # -------------------------------------------------------------------------
-    # Downsample images_gray to UNLPS resolution so everything matches
-    # -------------------------------------------------------------------------
-    images_gray = np.zeros((K, H_u, W_u), dtype=np.float32)
-    for k in range(K):
-        images_gray[k] = cv2.resize(
-            images_gray_full[k],
-            (W_u, H_u),
-            interpolation=cv2.INTER_AREA,
-        )
-    print(f"Downsampled images_gray shape: {images_gray.shape}")
 
     # -------------------------------------------------------------------------
     # Construct X from depth (UNLPS resolution)
@@ -153,7 +176,19 @@ def main():
     # -------------------------------------------------------------------------
     # Load trained model
     # -------------------------------------------------------------------------
-    weights_path = results_base / args.weights
+    # Check if weights is a full path or relative to results_base
+    if Path(args.weights).is_absolute():
+        weights_path = Path(args.weights)
+    elif (results_base / args.weights).exists():
+        weights_path = results_base / args.weights
+    elif (project_dir / args.weights).exists():
+        weights_path = project_dir / args.weights
+    else:
+        weights_path = Path(args.weights)
+    
+    if not weights_path.exists():
+        raise FileNotFoundError(f"Weights file not found: {weights_path}")
+    
     print(f"\nLoading LightNet weights from: {weights_path}")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -212,51 +247,43 @@ def main():
         angle_errs.append(angle)
         phys_errs.append(phys)
 
-        print (f"Light gt: {gt}")
-        print (f"Light pred: {pred}")
+        # print (f"Light gt: {gt}")
+        # print (f"Light pred: {pred}")
 
-        print(
-            f"Light {k:02d}:  "
-            f"Euclid={euclid:.4f},  "
-            f"Angle={angle:.3f} deg,  "
-            f"PhysicsErr={phys:.4e}"
-        )
+        # print(
+        #     f"Light {k:02d}:  "
+        #     f"Euclid={euclid:.4f},  "
+        #     f"Angle={angle:.3f} deg,  "
+        #     f"PhysicsErr={phys:.4e}"
+        # )
 
     print("\nMean Euclidean Error:", np.mean(euclid_errs))
     print("Mean Angular Error (deg):", np.mean(angle_errs))
     print("Mean Physics Reprojection Error:", np.mean(phys_errs))
 
-    # -------------------------------------------------------------------------
-    # Visualization
-    # -------------------------------------------------------------------------
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection="3d")
+    #save predictions and ground truth
+    np.save(results_base / "predictions.npy", L_pred_np)
+    np.save(results_base / "ground_truth.npy", L_gt_cam)
+    np.save(results_base / "euclid_errs.npy", euclid_errs)
+    np.save(results_base / "angle_errs.npy", angle_errs)
+    np.save(results_base / "phys_errs.npy", phys_errs)
 
-    ax.scatter(
-        L_gt_cam[:, 0],
-        L_gt_cam[:, 1],
-        L_gt_cam[:, 2],
-        c="green",
-        s=50,
-        label="GT",
-    )
+    # ax.scatter(
+    #     L_pred_np[:, 0],
+    #     L_pred_np[:, 1],
+    #     L_pred_np[:, 2],
+    #     c="red",
+    #     s=50,
+    #     label="Predicted",
+    # )
 
-    ax.scatter(
-        L_pred_np[:, 0],
-        L_pred_np[:, 1],
-        L_pred_np[:, 2],
-        c="red",
-        s=50,
-        label="Predicted",
-    )
-
-    ax.set_xlabel("X")
-    ax.set_ylabel("Y")
-    ax.set_zlabel("Z")
-    ax.legend()
-    ax.set_box_aspect([1, 1, 1])
-    plt.title("Predicted vs Ground Truth Light Positions (Camera Frame)")
-    plt.show()
+    # ax.set_xlabel("X")
+    # ax.set_ylabel("Y")
+    # ax.set_zlabel("Z")
+    # ax.legend()
+    # ax.set_box_aspect([1, 1, 1])
+    # plt.title("Predicted vs Ground Truth Light Positions (Camera Frame)")
+    # plt.show()
 
 
 if __name__ == "__main__":

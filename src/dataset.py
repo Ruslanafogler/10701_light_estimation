@@ -3,9 +3,10 @@ import json
 import math
 import os
 from pathlib import Path
-
+import random
 import mitsuba as mi
 import numpy as np
+import cv2
 
 from util import (
     load_dataset,
@@ -54,6 +55,76 @@ def fibonacci_hemisphere(n, radius=1.0):
             break
     return pts
 
+def fibonacci_hemisphere_filled(n, radius=1.0):
+    """Generate n points approximately uniformly distributed 
+    *inside* the upper hemisphere volume (z > 0)."""
+
+    pts = []
+    golden = (1 + 5**0.5) / 2
+
+    for k in range(n):
+        # --- Sample radius uniformly in volume ---
+        # For a sphere: r ~ U(0,1)^(1/3); for hemisphere same idea
+        r = radius * (random.random() ** (1/3))
+
+        # Fibonacci angle
+        theta = 2 * math.pi * k / golden
+
+        # z uniformly in hemisphere height
+        z = random.random()  # z in [0,1]
+        z = z * r            # scale z by sampled radius
+
+        # radial component in xy-plane
+        xy_r = math.sqrt(max(r*r - z*z, 0))
+        x = xy_r * math.cos(theta)
+        y = xy_r * math.sin(theta)
+
+        pts.append([x, y, z])
+
+    return pts
+
+def fibonacci_hemisphere_filled(n, radius=1.0):
+    """Half points on surface, half inside hemisphere."""
+    pts = []
+
+    # --- First: surface points (your Fibonacci distribution) ---
+    golden = (1 + 5**0.5) / 2
+    count = n // 2
+    k = 0
+    while len(pts) < count:
+        z = 1 - (2*k+1) / (count * 2)
+        k += 1
+        if z <= 0:
+            continue
+        theta = 2 * math.pi * k / golden
+        xy_r = math.sqrt(max(1 - z*z, 0))
+        x = xy_r * math.cos(theta)
+        y = xy_r * math.sin(theta)
+        pts.append([x * radius, y * radius, z * radius])
+
+    # --- Second: random interior points ---
+    for _ in range(n - count):
+        r = radius * (random.random() ** (1/3))
+        theta = 2 * math.pi * random.random()
+        phi = math.acos(random.random()) / 2   # restrict to z>0 hemisphere
+        x = r * math.sin(phi) * math.cos(theta)
+        y = r * math.sin(phi) * math.sin(theta)
+        z = r * math.cos(phi)
+        pts.append([x, y, z])
+
+    return pts
+
+def save_depth(depth, path_npy):
+    np.save(path_npy, depth.astype(np.float32))
+
+def save_depth_as_image(depth, path_png, normalize=True):
+    d = depth.copy()
+    if normalize:
+        d -= d.min()
+        if d.max() > 0:
+            d /= d.max()
+    d_img = (d * 255).clip(0, 255).astype(np.uint8)
+    cv2.imwrite(path_png, d_img)
 
 def get_mesh_centering_transform(obj_path, target_size=2.0):
     # find bbox
@@ -88,8 +159,8 @@ def generate_ground_truth(dataset_dir, model_name):
 
     gt_normals = dataset.normals()[0]
     gt_albedos_rgb = dataset.albedos()[0]
+    gt_depth = dataset.depth()[0]      # ★ NEW: depth GT from dataset
 
-    # luminance 
     gt_albedos = (
         0.2126 * gt_albedos_rgb[:, :, 0]
         + 0.7152 * gt_albedos_rgb[:, :, 1]
@@ -104,14 +175,19 @@ def generate_ground_truth(dataset_dir, model_name):
 
     print(f"Saving ground truth to {gt_dir}/")
 
-    # Save ground truth
+    # Existing GT
     save_normals(gt_normals, str(gt_dir / "normals.npy"))
     save_normals_as_image(gt_normals, str(gt_dir / "normals.png"))
     save_albedo(gt_albedos, str(gt_dir / "albedos.npy"))
     save_albedo_as_image(gt_albedos, str(gt_dir / "albedos.png"))
     save_light_directions(light_dirs_gt, str(gt_dir / "light_directions.npy"))
 
+    # ★ NEW: Save depth
+    save_depth(gt_depth, str(gt_dir / "depth.npy"))
+    save_depth_as_image(gt_depth, str(gt_dir / "depth.png"))
+
     print("Ground truth saved successfully")
+
 
 
 def generate_dataset(
@@ -249,7 +325,9 @@ def generate_dataset(
         "fx": fx, "fy": fy, "cx": cx, "cy": cy,
     }
 
-    positions = fibonacci_hemisphere(num_lights, radius=light_radius)
+    positions = fibonacci_hemisphere_filled(num_lights, radius=light_radius)
+
+    all_depths = []
 
     for i, pos in enumerate(positions):
         pos_array = np.array(pos)
@@ -274,6 +352,8 @@ def generate_dataset(
         depth_Z_store = np.zeros_like(depth_Z, dtype=np.float32)
         depth_Z_store[valid_mask] = depth_Z[valid_mask]
 
+        all_depths.append(depth_Z_store)
+
         # Replace Mitsuba AOV depth with our Z-map
         img_np = np.array(img, dtype=np.float32)
         img_np[..., 0] = depth_Z_store   # safe, no NaN/inf
@@ -281,9 +361,6 @@ def generate_dataset(
 
         output_path = os.path.join(output_dir, f"img_{i:03d}.exr")
         mi.Bitmap(img_np).write(output_path)
-
-        np.save(os.path.join(output_dir, f"valid_mask_{i:03d}.npy"), valid_mask.astype(np.uint8))
-
 
         # compute light direction in camera coords
         l_dir_world = -pos_array / np.linalg.norm(pos_array)
@@ -303,6 +380,14 @@ def generate_dataset(
 
     with open(os.path.join(output_dir, "lights_meta.json"), "w") as f:
         json.dump(meta, f, indent=2)
+
+    all_depths = np.stack(all_depths, axis=0)   # (K, H, W)
+
+    depth_gt_path = os.path.join(output_dir, "depth_gt.npy")
+    np.save(depth_gt_path, all_depths.astype(np.float32))
+
+    print(f"Saved all per-light depth maps to {depth_gt_path}")
+
 
     print(f"Rendered {num_lights} images to {output_dir}")
 

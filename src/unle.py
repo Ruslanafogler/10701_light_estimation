@@ -54,9 +54,7 @@ def estimate_intensity_from_L(I_k, X, B, mask, L_k, q):
     return float(np.clip(e_k, 0.0, 100.0))
 
 
-# -------------------------------------------------------------------------
 # Physics-guided energy F(L_k, e_k*) + closed-form e_k in torch
-# -------------------------------------------------------------------------
 
 def physical_energy_and_intensity_torch(
     I_k_t, X_t, B_t, mask_t, L_pred, q, eps=1e-6
@@ -108,10 +106,7 @@ def physical_energy_and_intensity_torch(
 
     return F_mean, e_k
 
-
-# -------------------------------------------------------------------------
 # LightNet-based estimator wrapper (I, A, N → L)
-# -------------------------------------------------------------------------
 
 class MLLightEstimator:
     """
@@ -158,9 +153,7 @@ class MLLightEstimator:
         return pred.cpu().numpy().astype(np.float32)
 
 
-# -------------------------------------------------------------------------
 # Core UNLPS Engine (Algorithm 1)
-# -------------------------------------------------------------------------
 
 class UNLPSEngine:
     """
@@ -225,7 +218,6 @@ class UNLPSEngine:
 
         self.ml_light_est = ml_light_estimator
 
-    # ------------------------------------------------------------------
     def _initialize_X_B(self):
         """Initialize depth as constant plane and normals as front-facing."""
         z0 = np.full((self.H, self.W), self.d0, np.float32)
@@ -234,7 +226,6 @@ class UNLPSEngine:
         self.B = np.zeros((self.H, self.W, 3), np.float32)
         self.B[..., 2] = -1.0  # facing camera
 
-    # ------------------------------------------------------------------
     def _classical_unlps(self, max_iters=8, depth_tol=1e-4, gd_steps=30, gd_lr=0.01):
         """
         Classic Algorithm 1: coarse search + gradient descent refinement for lights.
@@ -314,7 +305,6 @@ class UNLPSEngine:
 
         return z
 
-    # ------------------------------------------------------------------
     def _ml_unlps(self, max_iters=8, depth_tol=1e-4):
         """
         UNLPS variant using ML-predicted lights (L fixed, only e_k, B, z updated).
@@ -389,7 +379,6 @@ class UNLPSEngine:
 
         return z
 
-    # ------------------------------------------------------------------
     def solve(self, max_iters=8, depth_tol=1e-4, gd_steps=30, gd_lr=0.01):
         """
         Run UNLPS in classical mode (no ML) or ML mode if ml_light_estimator is given.
@@ -419,11 +408,7 @@ class UNLPSEngine:
         N, A = GeometryUtils.extract_normal_and_albedo(self.B)
         return N, A, z, self.L, self.e
 
-
-# -------------------------------------------------------------------------
-# LightDataset for (I, A, N) → L_gt_cam
-# -------------------------------------------------------------------------
-
+# LightDataset for (I, A, N) -> L_gt_cam
 class LightDatasetIAN(Dataset):
     """
     Dataset mapping (I, A, N) --> ground-truth light position in camera coords.
@@ -468,10 +453,6 @@ class LightDatasetIAN(Dataset):
 
         return torch.from_numpy(x), torch.from_numpy(L)
 
-# -------------------------------------------------------------------------
-# Main script
-# -------------------------------------------------------------------------
-
 def main():
     parser = argparse.ArgumentParser(description="Train LightNet with physics-guided loss.")
     parser.add_argument("--model", type=str, default="sphere",
@@ -482,17 +463,14 @@ def main():
                         help="Supervised + physics epochs.")
     parser.add_argument("--batch_size", type=int, default=8,
                         help="Batch size for supervised training.")
-    parser.add_argument("--q", type=int, default=2, choices=[2, 3],
+    parser.add_argument("--q", type=int, default=3, choices=[2, 3],
                         help="Falloff exponent in near-light model.")
     args = parser.parse_args()
 
-    # ------------------------------------------------------------------
-    # Paths and dataset loading
-    # ------------------------------------------------------------------
     script_dir = Path(__file__).parent
     project_dir = script_dir.parent
     dataset_dir = project_dir / "dataset" / args.model
-    results_dir = project_dir / "results" / args.model / "unle"
+    results_dir = project_dir / "results" / args.model / "gt"
     results_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"Loading dataset from: {dataset_dir}")
@@ -514,12 +492,9 @@ def main():
             interpolation=cv2.INTER_AREA,
         )
 
-    # ------------------------------------------------------------------
-    # Load UNLPS results (from classical pass: run unle.py first)
-    # ------------------------------------------------------------------
-    normals_unc = np.load(results_dir / "normals_unc.npy")   # (H_unc,W_unc,3)
-    albedos_unc = np.load(results_dir / "albedos_unc.npy")   # (H_unc,W_unc)
-    depth_unc   = np.load(results_dir / "depth_unc.npy")     # (H_unc,W_unc)
+    normals_unc = np.load(results_dir / "normals.npy")   # (H_unc,W_unc,3)
+    albedos_unc = np.load(results_dir / "albedos.npy")   # (H_unc,W_unc)
+    depth_unc   = np.load(results_dir / "depth.npy")     # (H_unc,W_unc)
 
     # Resize UNLPS outputs to 128x128 if needed
     if normals_unc.shape[0] != RES or normals_unc.shape[1] != RES:
@@ -547,9 +522,6 @@ def main():
     # Simple object mask: where albedo > 0
     mask = (albedos_unc > 0).astype(np.uint8)
 
-    # ------------------------------------------------------------------
-    # Geometry for physics term: X_unc, B_unc
-    # ------------------------------------------------------------------
     cam = dataset.metadata["camera"]
     intrinsics = {
         "fx": cam["fx"],
@@ -563,9 +535,6 @@ def main():
     # Pseudonormals B = ρ N
     B_unc = albedos_unc[..., None] * normals_unc                          # (H,W,3)
 
-    # ------------------------------------------------------------------
-    # Ground-truth light positions, converted to camera coordinates
-    # ------------------------------------------------------------------
     light_positions_world = dataset.light_positions()   # (K,3)
     R_cw = np.array(cam["R_cw"])                       # world -> cam, shape (3,3) or (1,3,3)
     C = np.array(cam["location_world"])                # camera center (3,)
@@ -576,22 +545,16 @@ def main():
     # L_cam = R_cw @ (L_world - C)
     L_gt_cam = (R_cw @ (light_positions_world - C).T).T   # (K,3)
 
-    # ------------------------------------------------------------------
-    # Build dataset and dataloaders
-    # ------------------------------------------------------------------
     ds = LightDatasetIAN(images_gray, albedos_unc, normals_unc, L_gt_cam)
     loader_sup = DataLoader(ds, batch_size=args.batch_size, shuffle=True)
 
     # For physics loss, we'll use batch size 1 (per-light physics)
     loader_phys = DataLoader(ds, batch_size=1, shuffle=True)
 
-    # ------------------------------------------------------------------
-    # Model, optimizer, losses
-    # ------------------------------------------------------------------
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
-    model = LightNet(in_channels=5).to(device)
+    model = LightNet(in_channels=5, dropout_p=0.15).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr = 5e-4)
     loss_fn_mse = nn.MSELoss()
 
@@ -602,9 +565,6 @@ def main():
 
     q = args.q
 
-    # ------------------------------------------------------------------
-    # Phase 1: Supervised-only training (helps get into right basin)
-    # ------------------------------------------------------------------
     print("\n=== Phase 1: Supervised-only training ===")
     for epoch in range(args.epochs_phase1):
         model.train()
@@ -627,9 +587,6 @@ def main():
         print(f"[Phase1] Epoch {epoch+1}/{args.epochs_phase1} "
               f"- Supervised Loss: {avg_loss:.6f}")
 
-    # ------------------------------------------------------------------
-    # Phase 2: Supervised + physics-guided constraint
-    # ------------------------------------------------------------------
     print("\n=== Phase 2: Supervised + Physics-guided training ===")
 
     lambda_mse = 1.0
@@ -668,9 +625,6 @@ def main():
         print(f"[Phase2] Epoch {epoch+1}/{args.epochs_phase2} "
               f"- Total Loss: {avg_loss:.6f}")
 
-    # ------------------------------------------------------------------
-    # Save trained model
-    # ------------------------------------------------------------------
     out_path = results_dir / "lightnet_ian_physics.pth"
     torch.save(model.state_dict(), out_path)
     print(f"\nSaved LightNet weights to: {out_path}")

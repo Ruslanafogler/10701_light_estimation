@@ -29,11 +29,6 @@ from unle import LightDatasetIAN, physical_energy_and_intensity_torch
 from util import load_dataset
 
 
-# -------------------------------------------------------------
-# Utility Functions
-# -------------------------------------------------------------
-
-
 def physics_error(I_k, X, B, mask, L, q):
     mask_flat = mask.ravel()
     Xf = X.reshape(-1,3)[mask_flat]
@@ -49,10 +44,6 @@ def physics_error(I_k, X, B, mask, L, q):
     return float(np.mean((If - ek*phi)**2))
 
 
-# -------------------------------------------------------------
-# Training Helpers
-# -------------------------------------------------------------
-
 def train_one_epoch(model, loader_sup, loader_phys, optimizer, loss_fn,
                     X_t, B_t, mask_t, lambda_phys, q, device):
 
@@ -61,9 +52,7 @@ def train_one_epoch(model, loader_sup, loader_phys, optimizer, loss_fn,
     total_loss_sum = 0
     n = 0
 
-    # -------------------------
-    # Supervised pass
-    # -------------------------
+
     model.train()
     for x, y in loader_sup:
         x, y = x.to(device), y.to(device)
@@ -78,9 +67,7 @@ def train_one_epoch(model, loader_sup, loader_phys, optimizer, loss_fn,
         total_loss_sum += loss_sup.item() * x.size(0)
         n += x.size(0)
 
-    # -------------------------
-    # Physics pass
-    # -------------------------
+    # Physics pass``
     for x, y in loader_phys:
         x, y = x.to(device), y.to(device)
         I_k = x[0,0]  # (H,W)
@@ -103,10 +90,6 @@ def train_one_epoch(model, loader_sup, loader_phys, optimizer, loss_fn,
     )
 
 
-# -------------------------------------------------------------
-# Validation
-# -------------------------------------------------------------
-
 def validate(model, X_val, L_val, device):
     model.eval()
     with torch.no_grad():
@@ -116,14 +99,32 @@ def validate(model, X_val, L_val, device):
     for i in range(len(pred)):
         eu.append(np.linalg.norm(pred[i] - L_val[i]))
 
+    from mpl_toolkits.mplot3d import Axes3D
+
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection='3d')
+    # Ground Truth
+    ax.scatter(L_val[:, 0], L_val[:, 1], L_val[:, 2], color='g', label="Ground Truth Light Positions", s=35, alpha=0.8)
+    # Prediction
+    ax.scatter(pred[:, 0], pred[:, 1], pred[:, 2], color='b', label="Estimated Light Positions", marker='^', s=35, alpha=0.8)
+
+    for i in range(len(pred)):
+        ax.plot([L_val[i, 0], pred[i, 0]], [L_val[i, 1], pred[i, 1]], [L_val[i, 2], pred[i, 2]], 'k--', alpha=0.4, linewidth=1)
+
+    ax.set_xlabel('X')
+    ax.set_ylabel('Y')
+    ax.set_zlabel('Z')
+    ax.set_title("3D Light Positions: Estimated vs Ground Truth")
+    ax.legend()
+    plt.tight_layout()
+    plt.savefig("light_positions_comparison_3d.png")
+    plt.show()
+    plt.close()
+
     return float(np.mean(eu))
 
 
-# -------------------------------------------------------------
-# MAIN EXPERIMENT
-# -------------------------------------------------------------
-
-def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=100):
+def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=100, resume=False):
     print("\n==============================")
     print(" Running LightNet Experiment")
     print("==============================\n")
@@ -132,12 +133,10 @@ def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=
     project_dir = script_dir.parent
 
     # Output directory
-    out_dir = project_dir / "experiments" / model_name / f"lr{lr}_b{batch}_lam{lambda_phys}_K{K}"
+    out_dir = project_dir / "experiments" / model_name / f"lr{lr}_b{batch}_lam{lambda_phys}_K{K}_512"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    # -----------------------------
     # Load DATASET
-    # -----------------------------
     train_dir = project_dir / "dataset" / model_name
     test_dir = project_dir / "dataset" / "test" / model_name
     dataset = load_dataset(str(train_dir))
@@ -197,12 +196,10 @@ def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=
     L_cam = L_cam.reshape(-1, 3)
     L_test_cam = L_test_cam.reshape(-1, 3)
 
-    # -----------------------------
     # Build dataset + loaders
-    # -----------------------------
     ds = LightDatasetIAN(gray, albedo_r, normals_r, L_cam)
     loader_sup  = DataLoader(ds, batch_size=batch, shuffle=True)
-    loader_phys = DataLoader(ds, batch_size=1, shuffle=True)
+    loader_phys = DataLoader(ds, batch_size=batch, shuffle=True)
 
     # Validation input (full batch)
     X_val = torch.from_numpy(np.stack([
@@ -217,13 +214,18 @@ def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=
         for k in range(test_gray.shape[0])
     ])).float()
 
-    # -----------------------------
+
     # Build model
-    # -----------------------------
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Using device: {device}")
 
     model = LightNet(in_channels=5).to(device)
+
+    if resume:
+        model.load_state_dict(torch.load(out_dir/"lightnet.pth"))
+    else:
+        model = LightNet(in_channels=5).to(device)
+
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     loss_fn = nn.MSELoss()
 
@@ -233,18 +235,15 @@ def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=
     X_val = X_val.to(device)
     X_test = X_test.to(device)
 
-    # -----------------------------
     # Logging arrays
-    # -----------------------------
     sup_curve = []
     phys_curve = []
     total_curve = []
     val_eu = []
     test_eu = []
 
-    # -----------------------------
+
     # PHASE 1: supervised only
-    # -----------------------------
     print("\n=== PHASE 1: Supervised ===")
     for epoch in range(epochs1):
         sup, phys, total = train_one_epoch(
@@ -264,14 +263,12 @@ def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=
 
         print(f"[P1 {epoch+1}/{epochs1}] Sup={sup:.4f} | Val-Eu={ve:.4f} | Test-Eu={ve_test:.4f}")
 
-    # -----------------------------
     # PHASE 2: supervised + physics
-    # -----------------------------
     print("\n=== PHASE 2: Supervised + Physics ===")
     for epoch in range(epochs2):
         sup, phys, total = train_one_epoch(
             model, loader_sup, loader_phys, optimizer, loss_fn,
-            X_t, B_t, mask_t, lambda_phys=lambda_phys, q=q, device=device
+            X_t, B_t, mask_t, lambda_phys = min(0.5, epoch * 0.01), q=q, device=device
         )
 
         sup_curve.append(sup)
@@ -287,9 +284,6 @@ def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=
         test_eu.append(ve_test)
         print(f"[P2 {epoch+1}/{epochs2}] Total={total:.4f} | Phys={phys:.5f} | Test-Eu={ve_test:.4f}")
 
-    # -----------------------------------------------------------
-    # Save plots
-    # -----------------------------------------------------------
     plt.figure(figsize=(7,5))
     plt.plot(sup_curve, label="Supervised Loss")
     plt.plot(phys_curve, label="Physics Loss")
@@ -319,28 +313,29 @@ def run_experiment(model_name, lr, batch, epochs1, epochs2, lambda_phys, q=3, K=
     }
     json.dump(metrics, open(out_dir/"metrics.json", "w"), indent=2)
 
-    print("\n==============================")
     print(" Experiment Completed")
     print(" Saved model + plots →", out_dir)
-    print("==============================")
+
+    #save plot comparing final light positions and directions with ground truth
 
     return metrics
 
 
-# -------------------------------------------------------------
-# CLI
-# -------------------------------------------------------------
-
 def main():
     p = argparse.ArgumentParser()
     p.add_argument("--model", type=str, default="bunny")
-    p.add_argument("--lr", type=float, default=5e-4)
+    p.add_argument("--lr", type=float, default=1e-4)
     p.add_argument("--batch", type=int, default=8)
-    p.add_argument("--epochs1", type=int, default=160)
+    p.add_argument("--epochs1", type=int, default=200)
     p.add_argument("--epochs2", type=int, default=80)
     p.add_argument("--lambda_phys", type=float, default=0.1)
-    p.add_argument("--K", type=int, default=100)
+    p.add_argument("--K", type=int, default=200)
     p.add_argument("--q", type=int, default=3)
+    # NEW — resume training option
+    p.add_argument("--resume", type=str, default=None,
+                   help="Path to checkpoint (.pth) to resume training from.")
+
+
     args = p.parse_args()
 
     run_experiment(
@@ -351,7 +346,8 @@ def main():
         epochs2=args.epochs2,
         lambda_phys=args.lambda_phys,
         q=args.q,
-        K=args.K
+        K=args.K,
+        resume=args.resume
     )
 
 if __name__ == "__main__":
